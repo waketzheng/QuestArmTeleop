@@ -1,4 +1,4 @@
-arm_ik_pose_node:
+/**:
   ros__parameters:
     # 机器人描述包名：用于定位 URDF 所在包
     # 调整方法：如果更换机器人模型/包名，这里改为对应 package 名称
