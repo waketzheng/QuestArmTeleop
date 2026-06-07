@@ -31,6 +31,9 @@ def generate_launch_description():
             "tcp_offset": "[0.0, 0.0, 0.13, 0.0, 0.0, 0.0]",
             "control": "false",
             "fast_mode": "true",
+            "home_speed_percent": "15",
+            "home_joint_tolerance": "0.03",
+            "motion_done_timeout": "0.0",
         }.items(),
     )
 
@@ -51,6 +54,9 @@ def generate_launch_description():
             "tcp_offset": "[0.0, 0.0, 0.13, 0.0, 0.0, 0.0]",
             "control": "false",
             "fast_mode": "true",
+            "home_speed_percent": "15",
+            "home_joint_tolerance": "0.03",
+            "motion_done_timeout": "0.0",
         }.items(),
     )
 
@@ -107,12 +113,17 @@ def generate_launch_description():
                 "hand_name": "left",
                 "handle_pose_topic": "/left_handle_pose",
                 "feedback_tcp_pose_topic": "/left_arm/feedback/tcp_pose",
+                "feedback_joint_topic": "/left_arm/feedback/joint_states",
                 "delta_pose_topic": "/left_delta_pose",
                 "control_joint_topic": "/left_arm/control/joint_states",
                 "start_button": "X",
                 "stop_button": "Y",
                 "trigger_axis": "leftTrig",
-                "gripper_max_range": 0.07,
+                "reset_axis": "leftGrip",
+                "reset_service": "/left_arm/move_home",
+                "reset_joint_tolerance": 0.03,
+                "reset_timeout": 8.0,
+                "gripper_max_range": 0.1,
             }
         ],
     )
@@ -128,12 +139,17 @@ def generate_launch_description():
                 "hand_name": "right",
                 "handle_pose_topic": "/right_handle_pose",
                 "feedback_tcp_pose_topic": "/right_arm/feedback/tcp_pose",
+                "feedback_joint_topic": "/right_arm/feedback/joint_states",
                 "delta_pose_topic": "/right_delta_pose",
                 "control_joint_topic": "/right_arm/control/joint_states",
                 "start_button": "A",
                 "stop_button": "B",
                 "trigger_axis": "rightTrig",
-                "gripper_max_range": 0.07,
+                "reset_axis": "rightGrip",
+                "reset_service": "/right_arm/move_home",
+                "reset_joint_tolerance": 0.03,
+                "reset_timeout": 8.0,
+                "gripper_max_range": 0.1,
             }
         ],
     )

@@ -12,6 +12,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
+from std_srvs.srv import Empty
 from transformations import euler_from_quaternion
 
 def xyzrpy_to_mat(x: float, y: float, z: float, roll: float, pitch: float, yaw: float) -> np.ndarray:
@@ -45,6 +46,7 @@ class RosOperator(Node):
         # Topic parameters
         self.declare_parameter("handle_pose_topic", "/right_handle_pose")
         self.declare_parameter("feedback_tcp_pose_topic", "/feedback/tcp_pose")
+        self.declare_parameter("feedback_joint_topic", "/feedback/joint_states")
         self.declare_parameter("delta_pose_topic", "/delta_pose")
         self.declare_parameter("control_joint_topic", "/control/joint_states")
 
@@ -53,29 +55,41 @@ class RosOperator(Node):
         self.declare_parameter("start_button", "A", dynamic_string_param)
         self.declare_parameter("stop_button", "B", dynamic_string_param)
         self.declare_parameter("trigger_axis", "rightTrig")
+        self.declare_parameter("reset_axis", "rightGrip")
+        self.declare_parameter("reset_pressed_threshold", 0.8)
+        self.declare_parameter("reset_joint_tolerance", 0.03)
+        self.declare_parameter("reset_timeout", 8.0)
 
         # Gripper/control parameters
         self.declare_parameter("gripper_joint_name", "gripper")
-        self.declare_parameter("gripper_max_range", 0.07)
+        self.declare_parameter("gripper_max_range", 0.1)
         self.declare_parameter("control_rate_hz", 30.0)
         self.declare_parameter("hand_name", "right")
+        self.declare_parameter("reset_service", "/move_home")
 
         handle_pose_topic = str(self.get_parameter("handle_pose_topic").value)
         feedback_tcp_pose_topic = str(self.get_parameter("feedback_tcp_pose_topic").value)
+        feedback_joint_topic = str(self.get_parameter("feedback_joint_topic").value)
         delta_pose_topic = str(self.get_parameter("delta_pose_topic").value)
         control_joint_topic = str(self.get_parameter("control_joint_topic").value)
 
         self.start_button = self._normalize_button_name(self.get_parameter("start_button").value, "start_button")
         self.stop_button = self._normalize_button_name(self.get_parameter("stop_button").value, "stop_button")
         self.trigger_axis = str(self.get_parameter("trigger_axis").value)
+        self.reset_axis = str(self.get_parameter("reset_axis").value)
+        self.reset_pressed_threshold = float(self.get_parameter("reset_pressed_threshold").value)
+        self.reset_joint_tolerance = float(self.get_parameter("reset_joint_tolerance").value)
+        self.reset_timeout = float(self.get_parameter("reset_timeout").value)
 
         self.gripper_joint_name = str(self.get_parameter("gripper_joint_name").value)
         self.gripper_max_range = float(self.get_parameter("gripper_max_range").value)
         control_rate_hz = float(self.get_parameter("control_rate_hz").value)
         self.hand_name = str(self.get_parameter("hand_name").value)
+        reset_service = str(self.get_parameter("reset_service").value)
 
         self.pub_delta_pose = self.create_publisher(PoseStamped, delta_pose_topic, 10)
         self.pub_move_j = self.create_publisher(JointState, control_joint_topic, 10)
+        self.move_home_client = self.create_client(Empty, reset_service)
 
         # Callback inputs
         self.x = None
@@ -91,11 +105,20 @@ class RosOperator(Node):
         self.tcp_roll = None
         self.tcp_pitch = None
         self.tcp_yaw = None
+        self.feedback_joint_positions = {}
 
         self.flag = False
+        self.last_reset_pressed = False
+        self.reset_future = None
+        self.reset_pending = False
+        self.reset_waiting_for_home = False
+        self.reset_started_at = None
+        self.reset_timeout_logged = False
+        self.reset_joint_names = [f"joint{i}" for i in range(1, 7)]
 
         self.create_subscription(PoseStamped, handle_pose_topic, self.handle_pose_callback, 1)
         self.create_subscription(PoseStamped, feedback_tcp_pose_topic, self.tcp_pose_callback, 1)
+        self.create_subscription(JointState, feedback_joint_topic, self.feedback_joint_callback, 1)
 
         # Wifi example:
         # self.oculus_reader = OculusReader(ip_address='192.168.124.2')
@@ -112,8 +135,10 @@ class RosOperator(Node):
         self.get_logger().info(
             f"pub_delta_pose ready ({self.hand_name}). "
             f"handle_topic={handle_pose_topic}, feedback_topic={feedback_tcp_pose_topic}, "
-            f"delta_topic={delta_pose_topic}, control_topic={control_joint_topic}, "
-            f"buttons=({self.start_button}/{self.stop_button}), trigger={self.trigger_axis}"
+            f"joint_feedback_topic={feedback_joint_topic}, delta_topic={delta_pose_topic}, "
+            f"control_topic={control_joint_topic}, "
+            f"buttons=({self.start_button}/{self.stop_button}), trigger={self.trigger_axis}, "
+            f"reset={self.reset_axis}->{reset_service}"
         )
 
     def handle_pose_callback(self, msg: PoseStamped):
@@ -144,13 +169,97 @@ class RosOperator(Node):
             )
             self.start_pose_matrix = self.zero_matrix
 
-    def _extract_trigger_value(self, buttons: dict) -> float:
-        trigger_raw: Any = buttons.get(self.trigger_axis, [0.0])
-        if isinstance(trigger_raw, (list, tuple)):
-            return float(trigger_raw[0]) if trigger_raw else 0.0
-        if isinstance(trigger_raw, (int, float)):
-            return float(trigger_raw)
+    def feedback_joint_callback(self, msg: JointState):
+        self.feedback_joint_positions = {
+            name: float(msg.position[idx])
+            for idx, name in enumerate(msg.name)
+            if idx < len(msg.position)
+        }
+
+    def _extract_axis_value(self, buttons: dict, axis_name: str) -> float:
+        axis_raw: Any = buttons.get(axis_name, [0.0])
+        if isinstance(axis_raw, (list, tuple)):
+            return float(axis_raw[0]) if axis_raw else 0.0
+        if isinstance(axis_raw, (int, float, bool)):
+            return float(axis_raw)
         return 0.0
+
+    def _request_reset(self):
+        if self.reset_future is not None and not self.reset_future.done():
+            return
+        if not self.move_home_client.service_is_ready():
+            if not self.reset_pending:
+                self.get_logger().warn(f"[{self.hand_name}] 复位服务尚未就绪，等待就绪后执行")
+            self.reset_pending = True
+            return
+        self.reset_pending = False
+        self.get_logger().info(f"[{self.hand_name}] 触发机械臂复位")
+        self.reset_future = self.move_home_client.call_async(Empty.Request())
+        self.reset_waiting_for_home = True
+        self.reset_started_at = time.monotonic()
+        self.reset_timeout_logged = False
+
+    def _feedback_joints_at_home(self) -> bool:
+        for joint_name in self.reset_joint_names:
+            if joint_name not in self.feedback_joint_positions:
+                return False
+            if abs(self.feedback_joint_positions[joint_name]) > self.reset_joint_tolerance:
+                return False
+        return True
+
+    def _realign_after_reset(self):
+        if self.tcp_x is not None and self.x is not None:
+            self.zero_matrix = xyzrpy_to_mat(
+                self.tcp_x,
+                self.tcp_y,
+                self.tcp_z,
+                self.tcp_roll,
+                self.tcp_pitch,
+                self.tcp_yaw,
+            )
+            self.start_pose_matrix = xyzrpy_to_mat(self.x, self.y, self.z, self.roll, self.pitch, self.yaw)
+
+    def _update_reset_state(self):
+        if self.reset_pending:
+            self._request_reset()
+            return True
+
+        if self.reset_future is not None and not self.reset_future.done():
+            return True
+
+        if self.reset_future is not None:
+            try:
+                self.reset_future.result()
+            except Exception as exc:
+                self.get_logger().error(f"[{self.hand_name}] 复位服务调用失败: {exc}")
+                self.reset_future = None
+                self.reset_waiting_for_home = False
+                return False
+            self.reset_future = None
+
+        if not self.reset_waiting_for_home:
+            return False
+
+        if self._feedback_joints_at_home():
+            self._realign_after_reset()
+            self.reset_waiting_for_home = False
+            self.reset_started_at = None
+            self.get_logger().info(f"[{self.hand_name}] 复位完成，遥操基准已重新对齐")
+            return False
+
+        if (
+            self.reset_timeout > 0.0
+            and self.reset_started_at is not None
+            and time.monotonic() - self.reset_started_at > self.reset_timeout
+            and not self.reset_timeout_logged
+        ):
+            self.get_logger().warn(
+                f"[{self.hand_name}] 复位尚未到位，继续等待关节回零；"
+                f"tolerance={self.reset_joint_tolerance}"
+            )
+            self.reset_timeout_logged = True
+
+        return True
 
     def _normalize_button_name(self, raw_value: Any, param_name: str) -> str:
         if isinstance(raw_value, bool):
@@ -176,8 +285,16 @@ class RosOperator(Node):
     def control_loop(self):
         _, buttons = self.oculus_reader.get_transformations_and_buttons()
 
+        reset_pressed = self._extract_axis_value(buttons, self.reset_axis) >= self.reset_pressed_threshold
+        if reset_pressed and not self.last_reset_pressed:
+            self._request_reset()
+        self.last_reset_pressed = reset_pressed
+
+        if self._update_reset_state():
+            return
+
         # Gripper control
-        trigger_value = self._extract_trigger_value(buttons)
+        trigger_value = self._extract_axis_value(buttons, self.trigger_axis)
         gripper_value = max(0.0, min(trigger_value, 1.0)) * self.gripper_max_range
         gripper_msg = JointState()
         gripper_msg.header = Header()
