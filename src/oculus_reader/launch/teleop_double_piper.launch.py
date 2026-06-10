@@ -31,6 +31,7 @@ def generate_launch_description():
             "tcp_offset": "[0.0, 0.0, 0.13, 0.0, 0.0, 0.0]",
             "control": "false",
             "fast_mode": "true",
+            "pub_rate": "30",
         }.items(),
     )
 
@@ -51,6 +52,7 @@ def generate_launch_description():
             "tcp_offset": "[0.0, 0.0, 0.13, 0.0, 0.0, 0.0]",
             "control": "false",
             "fast_mode": "true",
+            "pub_rate": "30",
         }.items(),
     )
 
@@ -91,6 +93,11 @@ def generate_launch_description():
         executable="pub_pose.py",
         name="pub_pose_node",
         output="screen",
+        parameters=[
+            {
+                "publish_rate_hz": 30.0,
+            }
+        ],
         # pika frame to arm ee frame
         arguments=["--ros-args", "-p", "ros_to_arm_rpy:=[0.0, 1.5708, 0.0]"],
     )
@@ -112,6 +119,7 @@ def generate_launch_description():
                 "start_button": "X",
                 "stop_button": "Y",
                 "trigger_axis": "leftTrig",
+                "control_rate_hz": 30.0,
                 "gripper_max_range": 0.07,
             }
         ],
@@ -133,6 +141,7 @@ def generate_launch_description():
                 "start_button": "A",
                 "stop_button": "B",
                 "trigger_axis": "rightTrig",
+                "control_rate_hz": 30.0,
                 "gripper_max_range": 0.07,
             }
         ],
