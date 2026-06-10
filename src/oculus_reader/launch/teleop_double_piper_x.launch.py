@@ -154,6 +154,25 @@ def generate_launch_description():
         ],
     )
 
+    lift_joystick_controller_node = Node(
+        package="oculus_reader",
+        executable="lift_joystick_controller.py",
+        name="lift_joystick_controller",
+        output="screen",
+        parameters=[
+            {
+                "lift_can_interface": "can3",
+            }
+        ],
+    )
+
+    agv_joystick_controller_node = Node(
+        package="oculus_reader",
+        executable="agv_joystick_controller.py",
+        name="agv_joystick_controller",
+        output="screen",
+    )
+
     # 5) ros2 run rviz2 rviz2 --ros-args -p config:=...
     rviz_node = Node(
         package='rviz2',
@@ -172,6 +191,8 @@ def generate_launch_description():
             left_pub_delta_pose_node,
             right_pub_delta_pose_node,
             pub_pose_node,
+            lift_joystick_controller_node,
+            agv_joystick_controller_node,
             rviz_node,
         ]
     )

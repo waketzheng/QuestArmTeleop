@@ -24,6 +24,8 @@ install(PROGRAMS
   scripts/pub_pose.py
   scripts/pub_delta_pose.py
   scripts/arm_ik_pose_node.py
+  scripts/lift_joystick_controller.py
+  scripts/agv_joystick_controller.py
   scripts/transformations.py
 
   DESTINATION lib/${PROJECT_NAME}
