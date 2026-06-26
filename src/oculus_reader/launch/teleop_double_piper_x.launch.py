@@ -34,7 +34,7 @@ def generate_launch_description():
             "home_speed_percent": "15",
             "home_joint_tolerance": "0.03",
             "motion_done_timeout": "0.0",
-            "pub_rate": "30",
+            #"pub_rate": "30",
         }.items(),
     )
 
@@ -58,7 +58,7 @@ def generate_launch_description():
             "home_speed_percent": "15",
             "home_joint_tolerance": "0.03",
             "motion_done_timeout": "0.0",
-            "pub_rate": "30",
+            #"pub_rate": "30",
         }.items(),
     )
 
@@ -99,11 +99,11 @@ def generate_launch_description():
         executable="pub_pose.py",
         name="pub_pose_node",
         output="screen",
-        parameters=[
-            {
-                "publish_rate_hz": 30.0,
-            }
-        ],
+        #parameters=[
+        #    {
+        #        "publish_rate_hz": 30.0,
+        #    }
+        #],
         # pika frame to arm ee frame
         arguments=["--ros-args", "-p", "ros_to_arm_rpy:=[-1.5708, 0.0, -1.5708]"],
     )
@@ -130,7 +130,7 @@ def generate_launch_description():
                 "reset_service": "/left_arm/move_home",
                 "reset_joint_tolerance": 0.03,
                 "reset_timeout": 8.0,
-                "control_rate_hz": 30.0,
+                #"control_rate_hz": 30.0,
                 "gripper_max_range": 0.1,
             }
         ],
@@ -157,7 +157,7 @@ def generate_launch_description():
                 "reset_service": "/right_arm/move_home",
                 "reset_joint_tolerance": 0.03,
                 "reset_timeout": 8.0,
-                "control_rate_hz": 30.0,
+                #"control_rate_hz": 30.0,
                 "gripper_max_range": 0.1,
             }
         ],
@@ -202,6 +202,6 @@ def generate_launch_description():
             pub_pose_node,
             lift_joystick_controller_node,
             agv_joystick_controller_node,
-            rviz_node,
+            #rviz_node,
         ]
     )
