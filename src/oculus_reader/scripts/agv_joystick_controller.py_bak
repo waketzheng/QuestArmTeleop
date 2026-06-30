@@ -12,20 +12,11 @@ from rclpy.node import Node
 
 
 class HttpAGVOperator:
-    def __init__(
-        self,
-        logger,
-        ip: str,
-        port: int,
-        request_timeout_s: float = 5.0,
-        stop_path: str = "/cmd/stop",
-    ):
+    def __init__(self, logger, ip: str, port: int, request_timeout_s: float = 5.0):
         self.logger = logger
         self.ip = ip.strip().rstrip("/")
         self.port = int(port)
         self.request_timeout_s = max(0.1, float(request_timeout_s))
-        stop_path = stop_path.strip() or "/cmd/stop"
-        self.stop_path = stop_path if stop_path.startswith("/") else f"/{stop_path}"
 
     @property
     def host(self):
@@ -61,7 +52,7 @@ class HttpAGVOperator:
         )
 
     def stop(self):
-        return self._request(self.stop_path, "POST")
+        pass
 
     def _request(self, path: str, method: str, data=None):
         url = urljoin(self.host, path)
@@ -113,8 +104,6 @@ class AGVJoystickController(Node):
         self.declare_parameter("agv_backward_distance_cm", 20)
         self.declare_parameter("agv_arc_distance_cm", 10)
         self.declare_parameter("agv_arc_turn_angle_deg", 15)
-        self.declare_parameter("agv_command_pulse_s", 0.2)
-        self.declare_parameter("agv_stop_path", "/cmd/stop")
         self.declare_parameter("agv_move_speed", 0.15)
         self.declare_parameter("agv_turn_speed", 0.35)
         self.declare_parameter("agv_sample_rate", 10)
@@ -146,12 +135,6 @@ class AGVJoystickController(Node):
         self.arc_turn_angle_deg = int(
             self.get_parameter("agv_arc_turn_angle_deg").value
         )
-        self.command_pulse_s = max(
-            0.05, float(self.get_parameter("agv_command_pulse_s").value)
-        )
-        self.stop_path = (
-            str(self.get_parameter("agv_stop_path").value).strip() or "/cmd/stop"
-        )
         self.move_speed = float(self.get_parameter("agv_move_speed").value)
         self.turn_speed = float(self.get_parameter("agv_turn_speed").value)
         self.sample_rate = int(self.get_parameter("agv_sample_rate").value)
@@ -174,7 +157,6 @@ class AGVJoystickController(Node):
         self._worker = None
         self._shutdown_done = False
         self._throttle_times = {}
-        self._was_active = False
 
         if not self.enabled:
             self.get_logger().info("AGV joystick control disabled by enable_agv=false")
@@ -187,7 +169,6 @@ class AGVJoystickController(Node):
                 ip=self.ip,
                 port=self.port,
                 request_timeout_s=self.request_timeout_s,
-                stop_path=self.stop_path,
             )
             self._init_oculus_reader()
             self._worker = threading.Thread(
@@ -204,8 +185,7 @@ class AGVJoystickController(Node):
                 f"ip={self.ip}, port={self.port}, deadzone={self.deadzone:.2f}, "
                 f"move_distance=(forward={self.forward_distance_cm}cm, "
                 f"backward={self.backward_distance_cm}cm), "
-                f"turn_angle={self.arc_turn_angle_deg}deg, "
-                f"pulse={self.command_pulse_s:.2f}s, stop_path={self.stop_path}"
+                f"turn_angle={self.arc_turn_angle_deg}deg"
             )
         except Exception as exc:
             self.operator = None
@@ -278,16 +258,7 @@ class AGVJoystickController(Node):
 
         stable = 0
         start_time = time.monotonic()
-        while (
-            time.monotonic() - start_time < timeout_s
-            and not self._stop_event.is_set()
-        ):
-            idle_context = self._current_idle_context()
-            if idle_context is not None and self._was_active:
-                self._send_stop(idle_context)
-                self._was_active = False
-                return False
-
+        while time.monotonic() - start_time < timeout_s and not self._stop_event.is_set():
             speed = self.operator.get_speed()
             if speed is not None:
                 vx = abs(float(speed.get("vx", 0.0)))
@@ -330,9 +301,7 @@ class AGVJoystickController(Node):
             self.get_logger().info(f"AGV move response: {resp}")
         self._log_speed_snapshot("move")
 
-        est_duration = max(
-            0.15, float(distance_cm) / 100.0 / max(self.move_speed, 0.01)
-        )
+        est_duration = max(0.15, float(distance_cm) / 100.0 / max(self.move_speed, 0.01))
         self._wait_until_idle(max(self.idle_timeout_s, est_duration * 2.0))
 
     def _send_turn(self, direction: int, angle_deg: int):
@@ -361,51 +330,6 @@ class AGVJoystickController(Node):
         )
         self._wait_until_idle(max(self.idle_timeout_s, est_duration * 2.0))
 
-    def _send_stop(self, context: str):
-        if self.operator is None:
-            return
-
-        resp = self.operator.stop()
-        if resp is None:
-            self._log_throttled(
-                "agv_stop_failed",
-                1.0,
-                "warning",
-                f"AGV stop command returned None during {context}. "
-                f"Check agv_stop_path={self.stop_path}",
-            )
-        elif self.debug_log:
-            self.get_logger().info(f"AGV stop response during {context}: {resp}")
-
-    def _pulse_distance_cm(self, configured_distance_cm: int):
-        pulse_distance_cm = int(
-            round(max(0.01, self.move_speed) * 100.0 * self.command_pulse_s)
-        )
-        return max(1, min(int(configured_distance_cm), pulse_distance_cm))
-
-    def _pulse_angle_deg(self, configured_angle_deg: int):
-        pulse_angle_deg = int(
-            round(
-                max(0.01, self.turn_speed)
-                * self.command_pulse_s
-                * 180.0
-                / 3.141592653589793
-            )
-        )
-        return max(1, min(int(configured_angle_deg), pulse_angle_deg))
-
-    def _current_idle_context(self):
-        with self._lock:
-            axis_x = self.axis_x
-            axis_y = self.axis_y
-            age_s = time.monotonic() - self.last_update_time
-
-        if age_s > self.command_timeout_s:
-            return "input timeout"
-        if axis_x == 0.0 and axis_y == 0.0:
-            return "joystick idle"
-        return None
-
     def _execute_control_cycle(self, axis_x: float, axis_y: float):
         turning_active = axis_x != 0.0
         moving_active = axis_y != 0.0
@@ -419,8 +343,7 @@ class AGVJoystickController(Node):
                     f"{'left' if turn_direction == 1 else 'right'} turn"
                 )
             self._send_turn(
-                direction=turn_direction,
-                angle_deg=self._pulse_angle_deg(self.arc_turn_angle_deg),
+                direction=turn_direction, angle_deg=self.arc_turn_angle_deg
             )
             if self._stop_event.is_set():
                 return
@@ -434,7 +357,6 @@ class AGVJoystickController(Node):
             )
             if turning_active:
                 distance_cm = self.arc_distance_cm
-            distance_cm = self._pulse_distance_cm(distance_cm)
             if self.debug_log:
                 self.get_logger().info(
                     "AGV joystick action: "
@@ -456,17 +378,9 @@ class AGVJoystickController(Node):
                 axis_y = 0.0
 
             if axis_x == 0.0 and axis_y == 0.0:
-                if self._was_active:
-                    self._send_stop(
-                        "input timeout"
-                        if age_s > self.command_timeout_s
-                        else "joystick idle"
-                    )
-                    self._was_active = False
                 time.sleep(0.03)
                 continue
 
-            self._was_active = True
             self._execute_control_cycle(axis_x, axis_y)
 
     def _log_throttled(self, key: str, period_s: float, level: str, message: str):
