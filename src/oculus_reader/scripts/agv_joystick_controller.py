@@ -146,9 +146,6 @@ class AGVJoystickController(Node):
         self.arc_turn_angle_deg = int(
             self.get_parameter("agv_arc_turn_angle_deg").value
         )
-        self.command_pulse_s = max(
-            0.05, float(self.get_parameter("agv_command_pulse_s").value)
-        )
         self.stop_path = (
             str(self.get_parameter("agv_stop_path").value).strip() or "/cmd/stop"
         )
@@ -205,7 +202,7 @@ class AGVJoystickController(Node):
                 f"move_distance=(forward={self.forward_distance_cm}cm, "
                 f"backward={self.backward_distance_cm}cm), "
                 f"turn_angle={self.arc_turn_angle_deg}deg, "
-                f"pulse={self.command_pulse_s:.2f}s, stop_path={self.stop_path}"
+                f"stop_path={self.stop_path}"
             )
         except Exception as exc:
             self.operator = None
@@ -377,23 +374,6 @@ class AGVJoystickController(Node):
         elif self.debug_log:
             self.get_logger().info(f"AGV stop response during {context}: {resp}")
 
-    def _pulse_distance_cm(self, configured_distance_cm: int):
-        pulse_distance_cm = int(
-            round(max(0.01, self.move_speed) * 100.0 * self.command_pulse_s)
-        )
-        return max(1, min(int(configured_distance_cm), pulse_distance_cm))
-
-    def _pulse_angle_deg(self, configured_angle_deg: int):
-        pulse_angle_deg = int(
-            round(
-                max(0.01, self.turn_speed)
-                * self.command_pulse_s
-                * 180.0
-                / 3.141592653589793
-            )
-        )
-        return max(1, min(int(configured_angle_deg), pulse_angle_deg))
-
     def _current_idle_context(self):
         with self._lock:
             axis_x = self.axis_x
@@ -420,7 +400,7 @@ class AGVJoystickController(Node):
                 )
             self._send_turn(
                 direction=turn_direction,
-                angle_deg=self._pulse_angle_deg(self.arc_turn_angle_deg),
+                angle_deg=max(1, int(self.arc_turn_angle_deg)),
             )
             if self._stop_event.is_set():
                 return
@@ -434,7 +414,7 @@ class AGVJoystickController(Node):
             )
             if turning_active:
                 distance_cm = self.arc_distance_cm
-            distance_cm = self._pulse_distance_cm(distance_cm)
+            distance_cm = max(1, int(distance_cm))
             if self.debug_log:
                 self.get_logger().info(
                     "AGV joystick action: "
@@ -475,7 +455,17 @@ class AGVJoystickController(Node):
         if last_time is not None and now - last_time < period_s:
             return
         self._throttle_times[key] = now
-        getattr(self.get_logger(), level)(message)
+        logger = self.get_logger()
+        if level == "debug":
+            logger.debug(message)
+        elif level == "info":
+            logger.info(message)
+        elif level == "warning":
+            logger.warning(message)
+        elif level == "error":
+            logger.error(message)
+        else:
+            logger.info(message)
 
     def shutdown(self):
         if self._shutdown_done:

@@ -166,7 +166,7 @@ class SimpleCanopenLift:
         request = bytes(
             [0x40, index & 0xFF, (index >> 8) & 0xFF, subindex, 0, 0, 0, 0]
         )
-        response = self._sdo_request(request, index, subindex)
+        response = self._sdo_request(request)
         command = response[0]
         if command == 0x80:
             abort_code = int.from_bytes(response[4:8], "little", signed=False)
@@ -194,7 +194,7 @@ class SimpleCanopenLift:
             [command_by_size[size], index & 0xFF, (index >> 8) & 0xFF, subindex]
         )
         request += payload.ljust(4, b"\x00")
-        response = self._sdo_request(request, index, subindex)
+        response = self._sdo_request(request)
         if response[0] == 0x80:
             abort_code = int.from_bytes(response[4:8], "little", signed=False)
             raise RuntimeError(
@@ -205,50 +205,17 @@ class SimpleCanopenLift:
                 f"Unexpected SDO download response command=0x{response[0]:02X}"
             )
 
-    def _sdo_request(self, payload: bytes, index: int, subindex: int):
+    def _sdo_request(self, payload: bytes):
         request_id = 0x600 + self.node_id
         response_id = 0x580 + self.node_id
-        self._drain_pending_sdo_responses(response_id)
         self._send_frame(request_id, payload)
 
-        deadline = time.monotonic() + self.sdo_timeout_s
-        while time.monotonic() < deadline:
-            try:
-                can_id, data = self._recv_frame()
-            except socket.timeout:
-                continue
-            if can_id == response_id and self._is_matching_sdo_response(
-                data, index, subindex
-            ):
+        deadline = time.time() + self.sdo_timeout_s
+        while time.time() < deadline:
+            can_id, data = self._recv_frame()
+            if can_id == response_id:
                 return data
-        raise TimeoutError(
-            f"Timed out waiting for SDO response from node {self.node_id} "
-            f"index=0x{index:04X} subindex=0x{subindex:02X}"
-        )
-
-    def _drain_pending_sdo_responses(self, response_id: int):
-        if self.socket is None:
-            raise RuntimeError("CAN socket is not connected")
-        previous_timeout = self.socket.gettimeout()
-        self.socket.settimeout(0.0)
-        try:
-            for _ in range(128):
-                try:
-                    can_id, _ = self._recv_frame()
-                except (BlockingIOError, socket.timeout):
-                    break
-                if can_id != response_id:
-                    continue
-        finally:
-            self.socket.settimeout(previous_timeout)
-
-    def _is_matching_sdo_response(self, data: bytes, index: int, subindex: int):
-        return (
-            len(data) >= 4
-            and data[1] == (index & 0xFF)
-            and data[2] == ((index >> 8) & 0xFF)
-            and data[3] == subindex
-        )
+        raise TimeoutError(f"Timed out waiting for SDO response from node {self.node_id}")
 
     def _send_frame(self, can_id: int, data: bytes):
         if self.socket is None:
@@ -632,17 +599,7 @@ class LiftJoystickController(Node):
         if last_time is not None and now - last_time < period_s:
             return
         self._throttle_times[key] = now
-        logger = self.get_logger()
-        if level == "debug":
-            logger.debug(message)
-        elif level == "info":
-            logger.info(message)
-        elif level == "warning":
-            logger.warning(message)
-        elif level == "error":
-            logger.error(message)
-        else:
-            logger.info(message)
+        getattr(self.get_logger(), level)(message)
 
     def shutdown(self):
         if self._shutdown_done:
